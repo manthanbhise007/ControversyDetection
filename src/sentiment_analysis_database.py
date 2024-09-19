@@ -3,7 +3,11 @@
 import pandas as pd
 from wnaffect import WNAffect # 3rd party open source module that mapped WNAffect from WN
 import sqlite3
-from textblob import TextBlob
+from textblob import TextBlob # type: ignore
+import torch
+from transformers import BertTokenizer, BertForSequenceClassification, Trainer, TrainingArguments # type: ignore
+from datasets import load_dataset, load_metric # type: ignore
+from sklearn.model_selection import train_test_split
 
 month = input("Which month's sentiment analysis do you want to do?(yyyy-mm format e.g.2016-06)\n>")
 
@@ -106,3 +110,74 @@ final_sentiment_df.to_csv("%s_stories_sentiment_annotated.csv" %(month))
 df_sentiment = pd.read_csv('%s_stories_sentiment_annotated.csv' %(month), index_col=0 )
 df_sentiment.to_sql('%s_sentiments_annotated.db' %(month), another_cnx)
 
+# Load a pre-trained tokenizer and model
+tokenizer = BertTokenizer.from_pretrained('distilbert-base-uncased')
+model = BertForSequenceClassification.from_pretrained('distilbert-base-uncased', num_labels=2)
+df_meta_data = pd.DataFrame(data, columns=cols) # type: ignore
+# Load your custom dataset (or a placeholder dataset for this example)
+# Ensure the dataset has two columns: 'text' and 'label'
+dataset = load_dataset( data_files=df_meta_data )  # Example CSV file with 'text' and 'label'
+dataset = dataset[train] # type: ignore
+cnx = sqlite3.connect("%s_stories.db" %(month))
+df = pd.read_sql("SELECT * FROM [%s_stories]" %(month), cnx)
+
+sample_size = input("How many stories do you want as a sample?\n>")
+sample_stories = df.sample(int(sample_size))
+
+another_cnx = sqlite3.connect("%s_sample_stories.db" %(month))
+sample_stories.to_sql("%s_sample_stories" %(month), another_cnx)
+# Tokenize the text data
+def preprocess_function(examples):
+    return tokenizer(examples[df], truncation=True, padding=True, max_length=128)
+
+tokenized_dataset = dataset.map(preprocess_function, batched=True)
+
+# Split the dataset into train and validation sets
+train_dataset, val_dataset = train_test_split(tokenized_dataset, test_size=0.2)
+
+# Define the evaluation metric
+metric = load_metric("accuracy")
+
+def compute_metrics(eval_pred):
+    logits, labels = eval_pred
+    predictions = torch.argmax(logits, dim=-1)
+    return metric.compute(predictions=predictions, references=labels)
+
+# Training arguments
+training_args = TrainingArguments(
+    output_dir='./results',
+    evaluation_strategy="epoch",
+    learning_rate=2e-5,
+    per_device_train_batch_size=16,
+    per_device_eval_batch_size=16,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+# Trainer for fine-tuning the model
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=val_dataset,
+    tokenizer=tokenizer,
+    compute_metrics=compute_metrics,
+)
+
+# Train the model
+trainer.train()
+
+# Save the model for later use
+model.save_pretrained('./controversy-model')
+tokenizer.save_pretrained('./controversy-model')
+
+# Example function to make predictions
+def predict_controversy(text):
+    inputs = tokenizer(text, return_tensors='pt', truncation=True, padding=True, max_length=128)
+    outputs = model(**inputs)
+    predictions = torch.argmax(outputs.logits, dim=-1)
+    return "Controversial" if predictions.item() == 1 else "Not Controversial"
+
+# Test the function
+test_text = "This is a very controversial statement."
+print(predict_controversy(test_text))

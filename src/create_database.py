@@ -3,7 +3,7 @@
 import timeit
 import xml.etree.ElementTree as ET
 import re
-import pandas as pd
+import pandas as pd # type: ignore
 import sqlite3
 import subprocess
 
@@ -130,6 +130,9 @@ cnx2 = sqlite3.connect('%s_stories.db' %(month))
 
 df_meta_data.to_sql('%s_metadata' %(month), cnx1)
 df_stories.to_sql('%s_stories' %(month), cnx2)
+
+
+
 
 cnx1.close()
 cnx2.close()
